@@ -64,4 +64,4 @@ COPY . .
 EXPOSE 3000
 
 # Start application
-CMD ["node", "scrapper.js"]
+CMD ["node", "uaid-scraper.js"]
