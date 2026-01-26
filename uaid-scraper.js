@@ -2,6 +2,7 @@ const { Builder, By, until } = require('selenium-webdriver');
 const chrome = require('selenium-webdriver/chrome');
 const axios = require('axios');
 const express = require('express');
+const { Client } = require('discord.js-selfbot-v13');
 
 // Configuration - Environment variables for Railway
 const WEBHOOK_URL = process.env.WEBHOOK_URL || 'https://discord.com/api/webhooks/1465266631335739518/D26OxmuPnon4kDh8AK5TeLBnF4c86oV7C5voXwxMDRxUPWliRrwBZQrPcWu4X4ylQWm7';
@@ -9,6 +10,11 @@ const USERNAME_WEBHOOK_URL = process.env.USERNAME_WEBHOOK_URL || 'https://discor
 const ITEM_IDS = process.env.ITEM_IDS || '439946249,180660043,1016143686,98346834,1191135761,250395631,416846000,398676450,42211680';
 const NEXUS_ADMIN_KEY = process.env.NEXUS_ADMIN_KEY;
 const NEXUS_API_URL = 'https://discord.nexusdevtools.com/lookup/roblox';
+
+// Discord bot configuration
+const USER_TOKEN = process.env.USER_TOKEN;
+const COMMAND_CHANNEL_ID = process.env.COMMAND_CHANNEL_ID || '1465283527166922802';
+const MONITOR_CHANNEL_ID = process.env.MONITOR_CHANNEL_ID || '1465281410821656618';
 
 // Speed settings
 const PAGE_LOAD_WAIT = 2000;
@@ -39,6 +45,301 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
     console.log(`🌐 Health check server running on port ${PORT}`);
 });
+
+// Initialize Discord client for commands
+let discordClient = null;
+if (USER_TOKEN) {
+    discordClient = new Client({ checkUpdate: false });
+
+    discordClient.on('ready', () => {
+        console.log(`✅ Discord bot logged in as ${discordClient.user.tag}`);
+        console.log(`👀 Accepting commands from channel ${COMMAND_CHANNEL_ID}`);
+        console.log(`📥 Reading usernames from channel ${MONITOR_CHANNEL_ID}`);
+    });
+
+    discordClient.on('messageCreate', async (message) => {
+        // Only listen to commands from the command channel
+        if (message.channel.id !== COMMAND_CHANNEL_ID) return;
+        if (!message.content.startsWith('!')) return;
+        
+        const command = message.content.trim();
+        
+        // Command: !total
+        if (command === '!total') {
+            console.log('📊 Processing !total command...');
+            await message.reply('🔄 Fetching all usernames from channel history... This may take a moment.');
+            
+            try {
+                const usernames = await fetchAllMessages(MONITOR_CHANNEL_ID);
+                const count = usernames.length;
+                
+                if (count === 0) {
+                    await message.reply('❌ No Discord usernames found in channel history.');
+                } else {
+                    await message.reply(`✅ Found **${count}** unique Discord username(s) in channel history.\n\nUse \`!makefiletotal\` to export the full list to a file.`);
+                }
+            } catch (error) {
+                console.error('❌ Error processing !total:', error.message);
+                await message.reply(`❌ Error: ${error.message}`);
+            }
+        }
+        
+        // Command: !totalfrom (username) to (username)
+        else if (command.startsWith('!totalfrom')) {
+            console.log('📊 Processing !totalfrom command...');
+            const match = command.match(/^!totalfrom\s+(.+?)\s+to\s+(.+)$/);
+            
+            if (!match) {
+                await message.reply('❌ Invalid format. Use: `!totalfrom <username> to <username>`');
+                return;
+            }
+            
+            const startUsername = match[1].trim();
+            const endUsername = match[2].trim();
+            
+            await message.reply(`🔄 Searching for messages between "${startUsername}" and "${endUsername}"...`);
+            
+            try {
+                const startMessageId = await findMessageIdByUsername(MONITOR_CHANNEL_ID, startUsername);
+                const endMessageId = await findMessageIdByUsername(MONITOR_CHANNEL_ID, endUsername);
+                
+                if (!startMessageId) {
+                    await message.reply(`❌ Could not find message with username: ${startUsername}`);
+                    return;
+                }
+                if (!endMessageId) {
+                    await message.reply(`❌ Could not find message with username: ${endUsername}`);
+                    return;
+                }
+                
+                const usernames = await fetchAllMessages(MONITOR_CHANNEL_ID, startMessageId, endMessageId);
+                const count = usernames.length;
+                
+                if (count === 0) {
+                    await message.reply('❌ No Discord usernames found between the specified messages.');
+                } else {
+                    await message.reply(`✅ Found **${count}** unique Discord username(s) between messages.\n\nUse \`!makefile ${startUsername} to ${endUsername}\` to export the full list to a file.`);
+                }
+            } catch (error) {
+                console.error('❌ Error processing !totalfrom:', error.message);
+                await message.reply(`❌ Error: ${error.message}`);
+            }
+        }
+        
+        // Command: !makefiletotal
+        else if (command === '!makefiletotal') {
+            console.log('📝 Processing !makefiletotal command...');
+            await message.reply('🔄 Creating file with all usernames... This may take a moment.');
+            
+            try {
+                const usernames = await fetchAllMessages(MONITOR_CHANNEL_ID);
+                const count = usernames.length;
+                
+                if (count === 0) {
+                    await message.reply('❌ No Discord usernames found. File not created.');
+                    return;
+                }
+                
+                const filename = `discord_usernames_total_${Date.now()}.txt`;
+                const content = usernames.join('\n');
+                
+                await message.reply({
+                    content: `✅ **${filename}**\n📊 Contains **${count}** Discord username(s).\n📎 File attached below.`,
+                    files: [{ attachment: Buffer.from(content, 'utf8'), name: filename }]
+                });
+            } catch (error) {
+                console.error('❌ Error processing !makefiletotal:', error.message);
+                await message.reply(`❌ Error: ${error.message}`);
+            }
+        }
+        
+        // Command: !makefile (username) to (username)
+        else if (command.startsWith('!makefile')) {
+            console.log('📝 Processing !makefile command...');
+            const match = command.match(/^!makefile\s+(.+?)\s+to\s+(.+)$/);
+            
+            if (!match) {
+                await message.reply('❌ Invalid format. Use: `!makefile <username> to <username>`');
+                return;
+            }
+            
+            const startUsername = match[1].trim();
+            const endUsername = match[2].trim();
+            
+            await message.reply(`🔄 Creating file with usernames between "${startUsername}" and "${endUsername}"...`);
+            
+            try {
+                const startMessageId = await findMessageIdByUsername(MONITOR_CHANNEL_ID, startUsername);
+                const endMessageId = await findMessageIdByUsername(MONITOR_CHANNEL_ID, endUsername);
+                
+                if (!startMessageId) {
+                    await message.reply(`❌ Could not find message with username: ${startUsername}`);
+                    return;
+                }
+                if (!endMessageId) {
+                    await message.reply(`❌ Could not find message with username: ${endUsername}`);
+                    return;
+                }
+                
+                const usernames = await fetchAllMessages(MONITOR_CHANNEL_ID, startMessageId, endMessageId);
+                const count = usernames.length;
+                
+                if (count === 0) {
+                    await message.reply('❌ No Discord usernames found. File not created.');
+                    return;
+                }
+                
+                const filename = `discord_usernames_${startUsername}_to_${endUsername}_${Date.now()}.txt`;
+                const content = usernames.join('\n');
+                
+                await message.reply({
+                    content: `✅ **${filename}**\n📊 Contains **${count}** Discord username(s).\n📎 File attached below.`,
+                    files: [{ attachment: Buffer.from(content, 'utf8'), name: filename }]
+                });
+            } catch (error) {
+                console.error('❌ Error processing !makefile:', error.message);
+                await message.reply(`❌ Error: ${error.message}`);
+            }
+        }
+    });
+
+    discordClient.on('error', (e) => console.error('❌ Discord client error:', e));
+} else {
+    console.log('ℹ️ USER_TOKEN not set. Discord bot functionality disabled.');
+}
+
+// Fetch all messages from channel using Discord API
+async function fetchAllMessages(channelId, startMessageId = null, endMessageId = null) {
+    const usernames = [];
+    let lastMessageId = startMessageId || null;
+    let foundStartMessage = !startMessageId;
+    let foundEndMessage = false;
+    
+    if (!USER_TOKEN) {
+        console.error('❌ USER_TOKEN not set, cannot fetch messages');
+        return [];
+    }
+    
+    console.log('📥 Fetching messages from Discord API...');
+    
+    while (true) {
+        try {
+            const url = `https://discord.com/api/v10/channels/${channelId}/messages`;
+            const params = { limit: 100 };
+            if (lastMessageId) params.before = lastMessageId;
+            
+            const response = await axios.get(url, {
+                headers: { 'Authorization': USER_TOKEN, 'Content-Type': 'application/json' },
+                params: params
+            });
+            
+            const messages = response.data;
+            if (!messages || messages.length === 0) break;
+            
+            for (const msg of messages) {
+                if (endMessageId && msg.id === endMessageId) {
+                    foundEndMessage = true;
+                    break;
+                }
+                
+                if (startMessageId && !foundStartMessage) {
+                    if (msg.id === startMessageId) foundStartMessage = true;
+                    else continue;
+                }
+                
+                if (foundStartMessage && !foundEndMessage) {
+                    if (msg.webhook_id) {
+                        // Check embeds
+                        if (msg.embeds && msg.embeds.length > 0) {
+                            for (const embed of msg.embeds) {
+                                if (embed.fields) {
+                                    for (const field of embed.fields) {
+                                        if (field.name === 'Discord Username' && field.value) {
+                                            const username = field.value.trim();
+                                            if (username && !usernames.includes(username)) {
+                                                usernames.push(username);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // Check plain content
+                        if (msg.content && msg.content.trim()) {
+                            const content = msg.content.trim();
+                            if (!content.includes(' ') && content.length > 0 && !usernames.includes(content)) {
+                                usernames.push(content);
+                            }
+                        }
+                    }
+                }
+                lastMessageId = msg.id;
+            }
+            
+            if (foundEndMessage || messages.length < 100) break;
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+        } catch (error) {
+            console.error('❌ Error fetching messages:', error.message);
+            break;
+        }
+    }
+    
+    return usernames.reverse();
+}
+
+// Find message ID by username
+async function findMessageIdByUsername(channelId, username) {
+    if (!USER_TOKEN) return null;
+    
+    let lastMessageId = null;
+    console.log(`🔍 Searching for message with username: ${username}`);
+    
+    while (true) {
+        try {
+            const url = `https://discord.com/api/v10/channels/${channelId}/messages`;
+            const params = { limit: 100 };
+            if (lastMessageId) params.before = lastMessageId;
+            
+            const response = await axios.get(url, {
+                headers: { 'Authorization': USER_TOKEN, 'Content-Type': 'application/json' },
+                params: params
+            });
+            
+            const messages = response.data;
+            if (!messages || messages.length === 0) break;
+            
+            for (const msg of messages) {
+                if (msg.webhook_id) {
+                    if (msg.embeds && msg.embeds.length > 0) {
+                        for (const embed of msg.embeds) {
+                            if (embed.fields) {
+                                for (const field of embed.fields) {
+                                    if (field.name === 'Discord Username' && field.value && field.value.trim() === username) {
+                                        return msg.id;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (msg.content && msg.content.trim() === username) {
+                        return msg.id;
+                    }
+                }
+                lastMessageId = msg.id;
+            }
+            
+            if (messages.length < 100) break;
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+        } catch (error) {
+            console.error('❌ Error searching for message:', error.message);
+            break;
+        }
+    }
+    
+    return null;
+}
 
 async function initializeWebDriver() {
     try {
@@ -498,10 +799,15 @@ async function scrapeItemForDeletedUsers(itemId) {
                         
                         // Lookup Discord username via Nexus API
                         const discordUsername = await lookupDiscordUsername(userData.username);
-                        userData.discord = discordUsername || "";
                         
-                        await sendToWebhook(userData);
-                        totalFound++;
+                        // Only send embed if Discord was found
+                        if (discordUsername) {
+                            userData.discord = discordUsername;
+                            await sendToWebhook(userData);
+                            totalFound++;
+                        } else {
+                            console.log(`  ⏭️ Skipping ${userData.username} - no Discord found`);
+                        }
                     } else {
                         console.log(`  ❌ No valid owner`);
                     }
@@ -526,11 +832,19 @@ async function main() {
     console.log('================================');
     console.log('This script finds Deleted/Hidden users and looks up their previous owners.\n');
     
-    // Check Nexus API configuration
+    // Check configurations
     if (NEXUS_ADMIN_KEY) {
         console.log('✅ Nexus API configured - Discord lookups enabled');
     } else {
         console.log('⚠️ NEXUS_ADMIN_KEY not set - Discord lookups disabled');
+    }
+    
+    if (USER_TOKEN) {
+        console.log('✅ Discord bot configured - Commands enabled');
+        console.log(`   Command channel: ${COMMAND_CHANNEL_ID}`);
+        console.log(`   Monitor channel: ${MONITOR_CHANNEL_ID}`);
+    } else {
+        console.log('⚠️ USER_TOKEN not set - Discord commands disabled');
     }
     console.log('');
     
@@ -565,5 +879,13 @@ process.on('SIGINT', async () => {
     }
     process.exit(0);
 });
+
+// Start Discord bot login
+if (USER_TOKEN && discordClient) {
+    discordClient.login(USER_TOKEN).catch((e) => {
+        console.error('❌ Failed to login to Discord:', e.message);
+        console.log('ℹ️ Discord bot functionality disabled. Scraper will continue without Discord commands.');
+    });
+}
 
 main();
