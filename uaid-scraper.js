@@ -5,7 +5,10 @@ const express = require('express');
 
 // Configuration - Environment variables for Railway
 const WEBHOOK_URL = process.env.WEBHOOK_URL || 'https://discord.com/api/webhooks/1465266631335739518/D26OxmuPnon4kDh8AK5TeLBnF4c86oV7C5voXwxMDRxUPWliRrwBZQrPcWu4X4ylQWm7';
+const USERNAME_WEBHOOK_URL = process.env.USERNAME_WEBHOOK_URL || 'https://discord.com/api/webhooks/1465281642913599563/37S2bQWecCwslpK6tZXcPc9GunYvrnFY21BMcW8Llh0fbUyquhlN3TWx4Y8vv5K7a3ym';
 const ITEM_IDS = process.env.ITEM_IDS || '439946249,180660043,1016143686,98346834,1191135761,250395631,416846000,398676450,42211680';
+const NEXUS_ADMIN_KEY = process.env.NEXUS_ADMIN_KEY;
+const NEXUS_API_URL = 'https://discord.nexusdevtools.com/lookup/roblox';
 
 // Speed settings
 const PAGE_LOAD_WAIT = 2000;
@@ -65,6 +68,65 @@ async function initializeWebDriver() {
     }
 }
 
+function extractDiscordFromRecord(record) {
+    if (!record || typeof record !== 'object') return null;
+    
+    // Prefer explicit fields if present
+    if (record.discord_tag) return String(record.discord_tag);
+    if (record.discord_username && record.discriminator) {
+        return `${record.discord_username}#${record.discriminator}`;
+    }
+    if (record.discord_username) return String(record.discord_username);
+    
+    // Nexus /lookup/roblox returns objects like: { "username": "<discord username>", ... }
+    if (record.username) return String(record.username);
+    
+    // Fallback: any field whose key mentions "discord"
+    const key = Object.keys(record).find(k => k.toLowerCase().includes('discord'));
+    if (key && record[key]) {
+        return String(record[key]);
+    }
+    
+    return null;
+}
+
+async function lookupDiscordUsername(robloxUsername) {
+    if (!NEXUS_ADMIN_KEY) {
+        console.log(`  ⚠️ NEXUS_ADMIN_KEY not set, skipping Discord lookup`);
+        return null;
+    }
+    
+    try {
+        const response = await axios.get(NEXUS_API_URL, {
+            params: { query: robloxUsername },
+            headers: { 'x-admin-key': NEXUS_ADMIN_KEY }
+        });
+        
+        const body = response.data || {};
+        const records = Array.isArray(body.data) ? body.data : [];
+        
+        if (!records.length) {
+            console.log(`  ℹ️ No Discord found for ${robloxUsername}`);
+            return null;
+        }
+        
+        const discordRecord = records[0];
+        const discordValue = extractDiscordFromRecord(discordRecord);
+        
+        if (!discordValue) {
+            console.log(`  ℹ️ Could not extract Discord from Nexus response for ${robloxUsername}`);
+            return null;
+        }
+        
+        console.log(`  🎮 Discord found: ${discordValue}`);
+        return discordValue;
+        
+    } catch (error) {
+        console.error(`  ❌ Nexus API error for ${robloxUsername}:`, error.message);
+        return null;
+    }
+}
+
 async function sendToWebhook(userData) {
     console.log(`📤 Sending embed to webhook: ${userData.username}`);
     try {
@@ -74,7 +136,7 @@ async function sendToWebhook(userData) {
             fields: [
                 {
                     name: "Discord Username",
-                    value: userData.discord || " ",  // Blank for now, will use later
+                    value: userData.discord || " ",
                     inline: false
                 },
                 {
@@ -100,12 +162,30 @@ async function sendToWebhook(userData) {
         
         const response = await axios.post(WEBHOOK_URL, payload);
         console.log('✅ Webhook sent successfully, status:', response.status);
+        
+        // Send Discord username only to the username webhook (if Discord was found)
+        if (userData.discord) {
+            await sendUsernameToWebhook(userData.discord);
+        }
+        
         return true;
     } catch (e) {
         console.error('❌ Webhook POST error:', e.message);
         if (e.response) {
             console.error('Response status:', e.response.status);
         }
+        return false;
+    }
+}
+
+async function sendUsernameToWebhook(discordUsername) {
+    try {
+        const payload = { content: discordUsername };
+        const response = await axios.post(USERNAME_WEBHOOK_URL, payload);
+        console.log('✅ Username webhook sent, status:', response.status);
+        return true;
+    } catch (e) {
+        console.error('❌ Username webhook error:', e.message);
         return false;
     }
 }
@@ -415,6 +495,11 @@ async function scrapeItemForDeletedUsers(itemId) {
                     
                     if (userData) {
                         console.log(`  ✨ Found: ${userData.username}`);
+                        
+                        // Lookup Discord username via Nexus API
+                        const discordUsername = await lookupDiscordUsername(userData.username);
+                        userData.discord = discordUsername || "";
+                        
                         await sendToWebhook(userData);
                         totalFound++;
                     } else {
@@ -440,6 +525,14 @@ async function main() {
     console.log('🚀 UAID Previous Owner Scraper');
     console.log('================================');
     console.log('This script finds Deleted/Hidden users and looks up their previous owners.\n');
+    
+    // Check Nexus API configuration
+    if (NEXUS_ADMIN_KEY) {
+        console.log('✅ Nexus API configured - Discord lookups enabled');
+    } else {
+        console.log('⚠️ NEXUS_ADMIN_KEY not set - Discord lookups disabled');
+    }
+    console.log('');
     
     const initialized = await initializeWebDriver();
     if (!initialized) {
