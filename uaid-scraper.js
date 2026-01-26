@@ -115,25 +115,51 @@ async function checkUserHasAvatar(profileUrl) {
         await driver.get(profileUrl);
         await driver.sleep(PROFILE_CHECK_WAIT);
 
-        // Get page source and check for avatar indicators
-        const pageSource = await driver.getPageSource();
+        // Try to find the avatar image element specifically
+        // Rolimons uses img with class containing avatar or specific container
+        const avatarSelectors = [
+            'img.mx-auto.d-block.w-100.h-100',
+            'img[src*="rbxcdn.com"]',
+            '.player-avatar img',
+            '#player_avatar img'
+        ];
         
-        // Check for terminated user first (transparent placeholder)
-        if (pageSource.includes('transparent-square-110.png')) {
-            console.log(`  ❌ TERMINATED`);
-            return { valid: false, avatarUrl: null };
+        for (const selector of avatarSelectors) {
+            try {
+                const avatarImg = await driver.findElement(By.css(selector));
+                const src = await avatarImg.getAttribute('src');
+                
+                if (src) {
+                    // Check if it's the terminated placeholder
+                    if (src.includes('transparent-square') || src.includes('placeholder')) {
+                        console.log(`  ❌ TERMINATED (placeholder avatar)`);
+                        return { valid: false, avatarUrl: null };
+                    }
+                    
+                    // Check if it's a valid rbxcdn avatar
+                    if (src.includes('rbxcdn.com')) {
+                        console.log(`  ✅ Valid: ${src.substring(0, 50)}...`);
+                        return { valid: true, avatarUrl: src };
+                    }
+                }
+            } catch (e) {
+                // Selector not found, try next
+                continue;
+            }
         }
         
-        // Look for valid avatar URL in page source
-        // Pattern: https://tr.rbxcdn.com/...Avatar...
+        // Fallback: check page source for avatar patterns
+        const pageSource = await driver.getPageSource();
+        
+        // Look for valid rbxcdn avatar URL first (prioritize finding valid)
         const avatarMatch = pageSource.match(/https:\/\/tr\.rbxcdn\.com\/[^"'\s]+Avatar[^"'\s]*/i);
         if (avatarMatch) {
             const avatarUrl = avatarMatch[0];
-            console.log(`  ✅ Valid: ${avatarUrl.substring(0, 50)}...`);
+            console.log(`  ✅ Valid (source): ${avatarUrl.substring(0, 50)}...`);
             return { valid: true, avatarUrl: avatarUrl };
         }
         
-        // Also try to find any rbxcdn.com image URL
+        // Check for any rbxcdn image
         const rbxcdnMatch = pageSource.match(/https:\/\/tr\.rbxcdn\.com\/[^"'\s]+/i);
         if (rbxcdnMatch) {
             const avatarUrl = rbxcdnMatch[0];
@@ -141,11 +167,19 @@ async function checkUserHasAvatar(profileUrl) {
             return { valid: true, avatarUrl: avatarUrl };
         }
         
-        console.log(`  ⚠️ No avatar found, assuming valid`);
+        // Only mark as terminated if we explicitly find the placeholder AND no valid avatar
+        // Check if terminated placeholder exists in a specific context
+        if (pageSource.includes('transparent-square-110.png') && !pageSource.includes('tr.rbxcdn.com')) {
+            console.log(`  ❌ TERMINATED (no valid avatar found)`);
+            return { valid: false, avatarUrl: null };
+        }
+        
+        // Default: assume valid if we can't determine
+        console.log(`  ⚠️ Could not determine avatar status, assuming valid`);
         return { valid: true, avatarUrl: null };
         
     } catch (error) {
-        console.error('❌ Error checking user avatar:', error.message);
+        console.error('  ⚠️ Error checking avatar:', error.message);
         return { valid: true, avatarUrl: null };
     }
 }
