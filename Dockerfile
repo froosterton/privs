@@ -1,4 +1,4 @@
-FROM node:18-slim
+FROM node:22-slim
 
 # Install Chrome dependencies
 RUN apt-get update && apt-get install -y \
@@ -59,6 +59,9 @@ RUN npm install
 
 # Copy application files
 COPY . .
+
+# Force headless Chrome in containers
+ENV HEADLESS=1
 
 # Expose port
 EXPOSE 3000
